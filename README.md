@@ -1,111 +1,84 @@
-# ApartMatch
+# ApartMatch — an IDSS for choosing an off-campus apartment
 
 MSCI 436 (Decision Support Systems) project.
 
-An interactive tool that helps a university student decide **which apartments are worth viewing**, given a budget, a campus, and personal priorities.
+**The decision supported:** a university student with a fixed budget must
+decide which apartments to shortlist and go view. A wrong choice costs a
+year locked into an overpriced lease, a long commute, or weeks of wasted
+searching. ApartMatch ranks real rental listings by a suitability score
+the student controls, and flags listings priced below an ML estimate of
+market rent.
 
-## The decision it supports
+## Why this is an IDSS and not a report
 
-Finding an off-campus apartment is a real choice with real costs:
+- **Load-bearing interactivity:** the student sets hard constraints
+  (budget, bedrooms, max distance, pet policy) and importance weights
+  (low rent vs. short commute vs. space vs. below-market value vs.
+  amenities). Moving a weight slider re-ranks every listing, changing
+  which apartments make the shortlist — verified by an automated test.
+- **Evolving data:** listings churn daily. `scripts/update_data.py`
+  re-ingests a fresh export, re-cleans it, and retrains the fair-rent
+  model, reporting held-out MAE each time.
 
-- Too expensive → a year stuck in a lease you can't afford
-- Too far → a long daily commute
-- Too much browsing → weeks of searching with no shortlist
-
-ApartMatch does not "pick for you." It helps you **narrow thousands of listings into a shortlist of 3–5 places to go see**, using rules you control.
-
-## How the logic works
-
-The system has two layers: **hard rules** (must-haves) and **soft preferences** (what matters more).
-
-### 1. Hard constraints (must pass)
-
-Only listings that pass every rule below stay in the pool:
-
-| Constraint | Meaning |
-|---|---|
-| Campus / city | Must be near the campus you selected |
-| Max budget | Monthly rent must be ≤ your limit |
-| Bedrooms | Must have at least the bedrooms you need |
-| Max distance | Must be within your commute limit |
-| Pets (optional) | If checked, must explicitly allow cats and/or dogs |
-
-Anything that fails is removed completely — it never gets ranked.
-
-### 2. Soft preferences (how remaining listings are ranked)
-
-Surviving listings get a **suitability score from 0–100**. That score is a mix of five factors. You set how important each one is with the sidebar sliders:
-
-| Factor | Higher score when… |
-|---|---|
-| Low rent | Asking price is lower relative to your budget |
-| Short commute | Closer to campus |
-| More space | Larger square footage (compared to other matches) |
-| Below-market deal | Asking rent looks cheap vs. what similar units usually cost |
-| Amenity match | More of your selected amenities are listed |
-
-Weights are normalized, so raising one factor automatically reduces the relative influence of the others. **Moving a slider re-ranks the shortlist** — that interactivity is the point of the system.
-
-### 3. Fair-rent / "deal" check
-
-Separately, the system estimates a typical market rent for each listing from size, bedrooms/bathrooms, amenities, and location.
-
-- If asking price is **below** that estimate → higher deal score (possible bargain)
-- If asking price is **near** the estimate → around the middle (at market)
-- If asking price is **above** the estimate → lower deal score (possibly overpriced)
-
-This is one input to the ranking, not the final decision. You decide how much "deal hunting" matters by adjusting that slider.
-
-### 4. What you do with the output
-
-1. Set constraints and weights
-2. Review the ranked shortlist (top ~15)
-3. Use the price-vs-commute chart to spot cheap+close options your weights might undervalue
-4. Shortlist the top 3–5 and book viewings
-5. Prefer listings that stay near the top even when you tweak weights — those are more robust choices
-
-## Why this is decision support (not just a report)
-
-- Your inputs change which apartments appear and in what order
-- You can see the trade-offs (cheap vs. close vs. spacious vs. good deal)
-- The ranking is explainable: each factor is scored, then combined with your weights
-- Data can be refreshed and the fair-rent estimate relearned as listings change
-
-## How to run
+## Quick start
 
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Then open the local URL Streamlit prints (usually http://localhost:8501).
+Run tests: `python -m pytest tests/`
+Refresh data + retrain: `python scripts/update_data.py [new_listings.csv]`
 
-Optional:
+## Data
 
-```bash
-python -m pytest tests/                          # run checks
-python scripts/update_data.py [new_listings.csv] # refresh data + retrain
+UCI Machine Learning Repository #555, "Apartment for Rent Classified" —
+10,000 US rental listings from classified sites (semicolon-delimited,
+latin-1). After cleaning: **9,730 rows**. Known limitations, surfaced in
+the app itself:
+
+- Amenities are self-reported; missing ≠ absent.
+- 42% of listings omit a pet policy.
+- No furnished/unfurnished flag exists in this source (a deviation from
+  our original proposal; replaced with pet-policy filters and amenity
+  preferences).
+- Prices are a snapshot; the refresh pipeline addresses staleness in
+  deployment.
+
+## Model
+
+1. **Fair-rent model** — `HistGradientBoostingRegressor` predicting
+   monthly rent from bedrooms, bathrooms, square feet, amenity flags,
+   and state. Held-out MAE ≈ **$292/month**. Its residual becomes a
+   0–100 *deal score* (>50 = priced below predicted market rent).
+2. **Suitability score** — a transparent weighted composite of price
+   fit, commute distance (haversine to a selected campus), space, deal
+   score, and amenity match. Weights come directly from UI sliders and
+   are normalized, so criteria genuinely trade off.
+
+The composite is deliberately interpretable: a student can see *why* a
+listing ranks where it does, which a black-box ranker would not allow.
+
+## Repository layout
+
+```
+app.py                  Streamlit IDSS (run this)
+src/preprocess.py       cleaning pipeline (documented steps)
+src/model.py            fair-rent model + suitability scoring
+src/campuses.py         campus coordinate presets
+scripts/update_data.py  nightly refresh + retrain entry point
+tests/test_pipeline.py  end-to-end smoke test incl. load-bearing check
+data/raw/               UCI 10K listings snapshot
 ```
 
-## Data (and caveats that affect decisions)
+## Operationalization
 
-Source: UCI "Apartment for Rent Classified" (~10,000 US listings). After cleaning: **~9,730** usable rows.
-
-Important limitations (also shown in the app):
-
-- Amenities are self-reported — missing does **not** mean the amenity is absent
-- Many listings omit pet policy; pet filters only keep listings that **explicitly** allow pets
-- There is no furnished/unfurnished field in this dataset
-- Prices are a snapshot; refresh the data periodically for up-to-date decisions
-
-## Project layout
-
-```
-app.py                  Interactive UI (run this)
-src/preprocess.py       Cleaning steps for raw listings
-src/model.py            Fair-rent estimate + suitability scoring
-src/campuses.py         Campus locations used for commute distance
-scripts/update_data.py  Refresh listings and retrain fair-rent model
-tests/test_pipeline.py  End-to-end checks (including weight re-ranking)
-data/raw/               Listings snapshot
-```
+- **Access:** Streamlit Community Cloud (free tier) or any small VM;
+  one `streamlit run` process, no GPU required.
+- **Pipeline continuity:** nightly cron/GitHub Action runs
+  `update_data.py`; the app serves the newest cleaned file via cache
+  invalidation.
+- **Retraining:** on every refresh (< 5 s on this data size); MAE is
+  logged so drift is visible.
+- **Infrastructure:** Python 3.10+, pandas, scikit-learn, Streamlit.
+  Memory footprint < 500 MB.
